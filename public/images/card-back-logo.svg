@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" role="img" aria-labelledby="title desc">
+  <title id="title">Logo 40</title>
+  <desc id="desc">Logo de Cuarenta con cartas, pica y diamantes dorados.</desc>
+  <defs>
+    <linearGradient id="navy" x1="180" y1="260" x2="980" y2="980" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#142942"/>
+      <stop offset="0.55" stop-color="#07192c"/>
+      <stop offset="1" stop-color="#031020"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="520" y1="250" x2="1050" y2="760" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e6c15c"/>
+      <stop offset="0.48" stop-color="#c89532"/>
+      <stop offset="1" stop-color="#8d5f16"/>
+    </linearGradient>
+    <filter id="softShadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="12" stdDeviation="10" flood-color="#06101b" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" filter="url(#softShadow)">
+    <path d="M278 650 212 355c-19-87 34-174 121-191l359-68c45-9 94 5 126 36" stroke="url(#navy)" stroke-width="44"/>
+    <path d="M555 454 601 257c20-84 104-137 189-119l341 74c84 18 138 101 121 185l-65 322" stroke="url(#gold)" stroke-width="44"/>
+  </g>
+  <g fill="url(#navy)" filter="url(#softShadow)">
+    <path d="M520 403v414h96v98H520v105H378V915H134v-91l295-421h91Zm-141 207L236 817h143V610Z"/>
+    <path d="M799 457c69 0 124 25 164 75 41 50 61 122 61 216 0 95-20 168-61 219-40 51-95 77-164 77-70 0-125-26-166-77-40-51-60-124-60-219 0-94 20-166 60-216 41-50 96-75 166-75Zm0 93c-27 0-47 16-60 49-13 32-20 82-20 149 0 68 7 118 20 151 13 33 33 49 60 49 26 0 45-16 58-49 14-33 20-83 20-151 0-67-6-117-20-149-13-33-32-49-58-49Z"/>
+  </g>
+  <path d="M520 403v414h91v98h-91" fill="none" stroke="url(#gold)" stroke-width="34" stroke-linejoin="round"/>
+  <g fill="url(#gold)" filter="url(#softShadow)">
+    <path d="M950 285c22 57 49 85 105 106-56 22-83 50-105 107-22-57-49-85-105-107 56-21 83-49 105-106Z"/>
+    <path d="M771 634c28 73 62 108 134 136-72 28-106 63-134 136-28-73-63-108-136-136 73-28 108-63 136-136Z"/>
+  </g>
+  <path d="M277 274c20 0 44 22 63 41 30 30 32 67 6 90-18 16-44 15-64-1l-13-11-8 49-53-1 22-47-16 8c-28 14-61-1-70-30-10-30 8-58 34-76 20-14 50-28 65-55 12 18 22 33 34 33Z" fill="url(#navy)" filter="url(#softShadow)"/>
+</svg>
