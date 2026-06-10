@@ -89,6 +89,44 @@ h1 { margin: 0; font-size: clamp(42px, 7vw, 86px); line-height: .88; letter-spac
 .ranking-item small { display: block; margin-top: 3px; color: var(--brand-muted); font-weight: 800; }
 .ranking-score { text-align: right; }
 .ranking-score strong { color: var(--brand-gold-light); font-size: 26px; }
+.friends-panel { width: min(620px, 100%); text-align: left; }
+.friends-panel h1 { text-align: center; }
+.friends-mode { margin: 10px 0 0; color: var(--brand-muted); text-align: center; font-size: 13px; font-weight: 800; }
+.friends-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 20px; }
+.friends-actions button { min-width: 0; border: 1px solid rgba(230,193,92,.24); border-radius: 999px; background: rgba(255,247,236,.08); color: #d8c9aa; padding: 10px 12px; font-weight: 900; cursor: pointer; }
+.friends-actions button.active { background: linear-gradient(135deg, var(--brand-gold-light), var(--brand-gold)); border-color: var(--brand-gold-light); color: var(--brand-navy); }
+.friends-actions span { display: inline-grid; min-width: 22px; height: 22px; margin-left: 6px; place-items: center; border-radius: 999px; background: rgba(7,26,46,.88); color: var(--brand-gold-light); font-size: 12px; }
+.friend-invite-form { display: grid; gap: 12px; margin-top: 18px; padding: 14px; border: 1px solid rgba(230,193,92,.2); border-radius: 14px; background: rgba(2,13,28,.18); }
+.friend-invite-form label { display: grid; gap: 7px; color: #d8c9aa; font-size: 13px; font-weight: 900; text-transform: uppercase; }
+.friend-invite-form input { width: 100%; border: 1px solid rgba(230,193,92,.22); border-radius: 12px; background: rgba(2,13,28,.26); color: var(--brand-cream); padding: 13px 14px; outline: 0; }
+.friend-invite-form input:focus { border-color: rgba(230,193,92,.82); box-shadow: 0 0 0 3px rgba(230,193,92,.16); }
+.received-invites { display: grid; gap: 10px; margin-top: 18px; }
+.friends-message { margin: 12px 0 0; color: var(--brand-gold-light); font-weight: 900; text-align: center; }
+.friends-summary { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 18px 0 4px; padding: 12px 14px; border: 1px solid rgba(230,193,92,.2); border-radius: 14px; background: rgba(2,13,28,.18); color: #d8c9aa; }
+.friends-summary strong { color: var(--brand-gold-light); font-size: 28px; line-height: 1; }
+.friends-summary span { font-weight: 900; }
+.friends-list { display: grid; gap: 10px; margin-top: 22px; }
+.friend-item { display: grid; grid-template-columns: 48px 1fr auto; align-items: center; gap: 12px; padding: 13px; border: 1px solid rgba(230,193,92,.2); border-radius: 14px; background: rgba(2,13,28,.22); }
+.friend-avatar { width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; background: linear-gradient(135deg, var(--brand-gold-light), var(--brand-gold)); color: var(--brand-navy); font-weight: 1000; }
+.friend-item strong { color: var(--brand-cream); font-size: 18px; line-height: 1.1; }
+.friend-item small,
+.friend-item em { display: block; margin-top: 3px; color: var(--brand-muted); font-size: 13px; font-style: normal; font-weight: 800; }
+.friend-item em { color: #d8c9aa; font-weight: 700; }
+.friend-meta { text-align: right; }
+.friend-meta strong { color: var(--brand-gold-light); font-size: 25px; }
+.invite-actions { display: grid; gap: 8px; }
+.invite-actions button { border: 1px solid rgba(230,193,92,.24); border-radius: 999px; background: rgba(255,247,236,.08); color: var(--brand-cream); padding: 8px 12px; font-weight: 900; cursor: pointer; }
+.friend-invite-form button:disabled,
+.invite-actions button:disabled { opacity: .58; cursor: wait; }
+.invite-actions button:first-child { background: linear-gradient(135deg, var(--brand-gold-light), var(--brand-gold)); color: var(--brand-navy); border-color: var(--brand-gold-light); }
+.sent-invites { margin-top: 24px; padding-top: 18px; border-top: 1px solid rgba(230,193,92,.18); }
+.sent-invites h3 { text-align: center; }
+.sent-invite-item { display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid rgba(230,193,92,.14); }
+.sent-invite-item:first-of-type { border-top: 0; }
+.sent-invite-item > span { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: rgba(230,193,92,.16); color: var(--brand-gold-light); font-size: 12px; font-weight: 1000; }
+.sent-invite-item strong { color: var(--brand-cream); }
+.sent-invite-item small { display: block; margin-top: 2px; color: var(--brand-muted); font-weight: 800; }
+.sent-invite-item em { color: var(--brand-gold-light); font-style: normal; font-weight: 900; text-transform: capitalize; }
 .rules-panel ul { margin: 18px 0 0; padding-left: 22px; color: #e2d6c6; line-height: 1.7; }
 .scoreboard { display: grid; grid-template-columns: minmax(160px, 240px); gap: 14px; margin: 18px 0; justify-content: end; }
 .score, .inline-score { padding: 18px; border-radius: 18px; background: rgba(255,247,236,.09); border: 1px solid rgba(230,193,92,.22); display: grid; gap: 2px; }
@@ -219,6 +257,12 @@ h2, h3 { margin: 0 0 14px; }
   .inline-score { text-align: left; }
   .compact-stats .inline-score { text-align: center; }
   .rating-summary { grid-template-columns: 1fr; }
+  .friends-actions { grid-template-columns: 1fr; }
+  .friend-item { grid-template-columns: 42px 1fr; }
+  .friend-meta { grid-column: 2; text-align: left; }
+  .invite-actions { grid-column: 1 / -1; grid-template-columns: 1fr 1fr; }
+  .sent-invite-item { grid-template-columns: 34px 1fr; }
+  .sent-invite-item em { grid-column: 2; }
   .count-ready { align-items: stretch; flex-direction: column; }
   .table-row { grid-template-columns: 64px 1fr; gap: 10px; margin: 18px 0; }
   .table-zone { min-height: 118px; padding: 14px; }

@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { isSupabaseConfigured, supabase } from './lib/supabaseClient';
 
 const PROFILE_KEY = 'cuarenta-profile';
 const HISTORY_KEY = 'cuarenta-history';
 const SAVED_GAME_KEY = 'cuarenta-saved-game';
+const FRIENDS_KEY = 'cuarenta-friends';
+const SENT_INVITES_KEY = 'cuarenta-sent-invites';
+const RECEIVED_INVITES_KEY = 'cuarenta-received-invites';
 const CARD_PLAY_SOUND = '/sounds/card-play.mp3';
 const SPECIAL_PLAY_SOUND = '/sounds/te-caen.mp3';
 const COMBO_PLAY_SOUND = '/sounds/caida-limpia.wav';
@@ -18,6 +22,15 @@ const DIFFICULTIES = {
   intermediate: { label: 'Intermedio', description: 'El rival busca capturas y bonificaciones razonables.', rating: 1200 },
   expert: { label: 'Experto', description: 'El rival prioriza caida, limpia y manos con mas cartas.', rating: 1500 },
 };
+const ACCEPTED_FRIENDS = [
+  { id: 'ana-quito', name: 'Ana Paredes', city: 'Quito', rating: 1320, acceptedAt: '2026-06-03T18:30:00.000Z', gamesTogether: 4, initials: 'AP' },
+  { id: 'diego-cuenca', name: 'Diego Mora', city: 'Cuenca', rating: 1268, acceptedAt: '2026-06-05T21:10:00.000Z', gamesTogether: 2, initials: 'DM' },
+  { id: 'maria-guayaquil', name: 'Maria Solis', city: 'Guayaquil', rating: 1185, acceptedAt: '2026-06-08T00:45:00.000Z', gamesTogether: 0, initials: 'MS' },
+];
+const RECEIVED_FRIEND_INVITES = [
+  { id: 'invite-carlos-loja', name: 'Carlos Vega', city: 'Loja', rating: 1212, sentAt: '2026-06-08T16:20:00.000Z', initials: 'CV' },
+  { id: 'invite-lucia-manta', name: 'Lucia Rivas', city: 'Manta', rating: 1164, sentAt: '2026-06-09T01:05:00.000Z', initials: 'LR' },
+];
 
 const SUITS = [
   { id: 'oros', icon: 'D', image: '/images/diamante.png', name: 'diamante' },
@@ -51,6 +64,45 @@ function readStored(key, fallback) {
 
 function writeStored(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
+}
+
+function makeInitials(name) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return (parts[0]?.[0] || '?') + (parts[1]?.[0] || '');
+}
+
+function profileDisplayName(profile) {
+  return profile?.display_name || profile?.username || 'Jugador';
+}
+
+function mapFriendshipRow(row, currentUserId) {
+  const profile = row.user_id === currentUserId ? row.friend : row.user;
+  const name = profileDisplayName(profile);
+  return {
+    id: row.id,
+    userId: profile?.id,
+    name,
+    city: profile?.city || '',
+    rating: profile?.rating || STARTING_RATING,
+    acceptedAt: row.accepted_at,
+    gamesTogether: row.games_together || 0,
+    initials: makeInitials(name).toUpperCase(),
+  };
+}
+
+function mapInviteRow(row, direction = 'received') {
+  const profile = direction === 'received' ? row.sender : row.receiver;
+  const name = profileDisplayName(profile);
+  return {
+    id: row.id,
+    userId: profile?.id,
+    name,
+    city: profile?.city || '',
+    rating: profile?.rating || STARTING_RATING,
+    sentAt: row.created_at,
+    initials: makeInitials(name).toUpperCase(),
+    status: row.status || 'pendiente',
+  };
 }
 
 function normalizeProfile(profile) {
@@ -441,6 +493,14 @@ export default function App() {
   const [profileDraft, setProfileDraft] = useState(() => normalizeProfile(readStored(PROFILE_KEY, EMPTY_PROFILE)));
   const [history, setHistory] = useState(() => readStored(HISTORY_KEY, []));
   const [savedGame, setSavedGame] = useState(() => readStored(SAVED_GAME_KEY, null));
+  const [friends, setFriends] = useState(() => readStored(FRIENDS_KEY, ACCEPTED_FRIENDS));
+  const [sentInvites, setSentInvites] = useState(() => readStored(SENT_INVITES_KEY, []));
+  const [receivedInvites, setReceivedInvites] = useState(() => readStored(RECEIVED_INVITES_KEY, RECEIVED_FRIEND_INVITES));
+  const [friendsView, setFriendsView] = useState('list');
+  const [inviteName, setInviteName] = useState('');
+  const [friendsMessage, setFriendsMessage] = useState('');
+  const [supabaseUser, setSupabaseUser] = useState(null);
+  const [friendsLoading, setFriendsLoading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState({ sound: true, animations: true, hints: true });
   const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
@@ -461,6 +521,7 @@ export default function App() {
   const selectedTableCards = useMemo(() => game.table.filter((c) => game.selectedTableIds.includes(c.id)), [game]);
   const isAnimating = Boolean(game.animation);
   const hasProfile = Boolean(profile.name.trim());
+  const useSupabaseFriends = Boolean(isSupabaseConfigured && supabaseUser);
 
   useEffect(() => {
     cardSoundRef.current = new Audio(CARD_PLAY_SOUND);
@@ -490,6 +551,29 @@ export default function App() {
       countTickSoundRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return undefined;
+    let active = true;
+
+    supabase.auth.getUser().then(({ data }) => {
+      if (active) setSupabaseUser(data.user || null);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSupabaseUser(session?.user || null);
+    });
+
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!useSupabaseFriends) return;
+    loadSupabaseFriends();
+  }, [useSupabaseFriends, supabaseUser?.id]);
 
   useEffect(() => {
     if (game.phase !== 'ended' || game.historySaved) return;
@@ -610,6 +694,61 @@ export default function App() {
     setScreen('game');
   }
 
+  async function syncSupabaseProfile(nextProfile = profile) {
+    if (!useSupabaseFriends || !supabaseUser) return;
+    const { error } = await supabase
+      .from('profiles')
+      .upsert({
+        id: supabaseUser.id,
+        display_name: nextProfile.name.trim() || supabaseUser.email?.split('@')[0] || 'Jugador',
+        city: nextProfile.city.trim(),
+        avatar_url: nextProfile.photo || null,
+        rating: Math.round(nextProfile.rating || STARTING_RATING),
+        games: nextProfile.games || 0,
+        wins: nextProfile.wins || 0,
+        losses: nextProfile.losses || 0,
+      }, { onConflict: 'id' });
+    if (error) setFriendsMessage(error.message);
+  }
+
+  async function loadSupabaseFriends() {
+    if (!supabaseUser || !supabase) return;
+    setFriendsLoading(true);
+    setFriendsMessage('');
+    await syncSupabaseProfile();
+
+    const [friendshipsResult, receivedResult, sentResult] = await Promise.all([
+      supabase
+        .from('friendships')
+        .select('id,user_id,friend_id,accepted_at,games_together,user:profiles!friendships_user_id_fkey(id,username,display_name,city,rating),friend:profiles!friendships_friend_id_fkey(id,username,display_name,city,rating)')
+        .or(`user_id.eq.${supabaseUser.id},friend_id.eq.${supabaseUser.id}`)
+        .order('accepted_at', { ascending: false }),
+      supabase
+        .from('friend_invites')
+        .select('id,status,created_at,sender:profiles!friend_invites_sender_id_fkey(id,username,display_name,city,rating)')
+        .eq('receiver_id', supabaseUser.id)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('friend_invites')
+        .select('id,status,created_at,receiver:profiles!friend_invites_receiver_id_fkey(id,username,display_name,city,rating)')
+        .eq('sender_id', supabaseUser.id)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false }),
+    ]);
+
+    if (friendshipsResult.error || receivedResult.error || sentResult.error) {
+      setFriendsMessage(friendshipsResult.error?.message || receivedResult.error?.message || sentResult.error?.message);
+      setFriendsLoading(false);
+      return;
+    }
+
+    setFriends((friendshipsResult.data || []).map((row) => mapFriendshipRow(row, supabaseUser.id)));
+    setReceivedInvites((receivedResult.data || []).map((row) => mapInviteRow(row, 'received')));
+    setSentInvites((sentResult.data || []).map((row) => mapInviteRow(row, 'sent')));
+    setFriendsLoading(false);
+  }
+
   function saveProfile(event) {
     event.preventDefault();
     const nextProfile = {
@@ -622,6 +761,7 @@ export default function App() {
     setProfile(nextProfile);
     setProfileDraft(nextProfile);
     writeStored(PROFILE_KEY, nextProfile);
+    syncSupabaseProfile(nextProfile);
   }
 
   function clearHistory() {
@@ -641,6 +781,145 @@ export default function App() {
 
   function removeProfilePhoto() {
     setProfileDraft({ ...profileDraft, photo: '' });
+  }
+
+  async function sendFriendInvite(event) {
+    event.preventDefault();
+    const name = inviteName.trim();
+    if (!name) return;
+
+    if (isSupabaseConfigured && !supabaseUser) {
+      setFriendsMessage('Inicia sesion para enviar invitaciones reales.');
+      return;
+    }
+
+    if (useSupabaseFriends) {
+      setFriendsLoading(true);
+      setFriendsMessage('');
+      const username = name.toLocaleLowerCase();
+      let { data: target, error } = await supabase
+        .from('profiles')
+        .select('id,username,display_name,city,rating')
+        .eq('username', username)
+        .maybeSingle();
+
+      if (!target && !error) {
+        const result = await supabase
+          .from('profiles')
+          .select('id,username,display_name,city,rating')
+          .ilike('display_name', name)
+          .limit(1)
+          .maybeSingle();
+        target = result.data;
+        error = result.error;
+      }
+
+      if (error) {
+        setFriendsMessage(error.message);
+        setFriendsLoading(false);
+        return;
+      }
+      if (!target) {
+        setFriendsMessage(`No encontre el usuario ${name}.`);
+        setFriendsLoading(false);
+        return;
+      }
+      if (target.id === supabaseUser.id) {
+        setFriendsMessage('No puedes enviarte una invitacion a ti mismo.');
+        setFriendsLoading(false);
+        return;
+      }
+
+      const { error: inviteError } = await supabase
+        .from('friend_invites')
+        .insert({ sender_id: supabaseUser.id, receiver_id: target.id });
+
+      if (inviteError) {
+        setFriendsMessage(inviteError.message);
+        setFriendsLoading(false);
+        return;
+      }
+
+      setInviteName('');
+      setFriendsMessage(`Invitacion enviada a ${profileDisplayName(target)}.`);
+      await loadSupabaseFriends();
+      return;
+    }
+
+    const normalized = name.toLocaleLowerCase();
+    const isFriend = friends.some((friend) => friend.name.toLocaleLowerCase() === normalized);
+    const alreadySent = sentInvites.some((invite) => invite.name.toLocaleLowerCase() === normalized);
+    if (isFriend || alreadySent) {
+      setFriendsMessage(isFriend ? `${name} ya esta en tu lista de amigos.` : `Ya enviaste una invitacion a ${name}.`);
+      return;
+    }
+
+    const nextInvite = {
+      id: `sent-${Date.now()}-${uid()}`,
+      name,
+      sentAt: new Date().toISOString(),
+      initials: makeInitials(name).toUpperCase(),
+      status: 'pendiente',
+    };
+    const nextSentInvites = [nextInvite, ...sentInvites];
+    setSentInvites(nextSentInvites);
+    writeStored(SENT_INVITES_KEY, nextSentInvites);
+    setInviteName('');
+    setFriendsMessage(`Invitacion enviada a ${name}.`);
+  }
+
+  async function acceptFriendInvite(invite) {
+    if (useSupabaseFriends) {
+      setFriendsLoading(true);
+      setFriendsMessage('');
+      const { error } = await supabase.rpc('accept_friend_invite', { invite_id: invite.id });
+      if (error) {
+        setFriendsMessage(error.message);
+        setFriendsLoading(false);
+        return;
+      }
+      setFriendsMessage(`Ahora ${invite.name} esta en tu lista de amigos.`);
+      await loadSupabaseFriends();
+      return;
+    }
+
+    const nextFriend = {
+      id: `friend-${Date.now()}-${uid()}`,
+      name: invite.name,
+      city: invite.city || '',
+      rating: invite.rating || STARTING_RATING,
+      acceptedAt: new Date().toISOString(),
+      gamesTogether: 0,
+      initials: invite.initials || makeInitials(invite.name).toUpperCase(),
+    };
+    const nextFriends = [nextFriend, ...friends];
+    const nextReceivedInvites = receivedInvites.filter((item) => item.id !== invite.id);
+    setFriends(nextFriends);
+    setReceivedInvites(nextReceivedInvites);
+    writeStored(FRIENDS_KEY, nextFriends);
+    writeStored(RECEIVED_INVITES_KEY, nextReceivedInvites);
+    setFriendsMessage(`Ahora ${invite.name} esta en tu lista de amigos.`);
+  }
+
+  async function rejectFriendInvite(invite) {
+    if (useSupabaseFriends) {
+      setFriendsLoading(true);
+      setFriendsMessage('');
+      const { error } = await supabase.rpc('reject_friend_invite', { invite_id: invite.id });
+      if (error) {
+        setFriendsMessage(error.message);
+        setFriendsLoading(false);
+        return;
+      }
+      setFriendsMessage(`Rechazaste la invitacion de ${invite.name}.`);
+      await loadSupabaseFriends();
+      return;
+    }
+
+    const nextReceivedInvites = receivedInvites.filter((item) => item.id !== invite.id);
+    setReceivedInvites(nextReceivedInvites);
+    writeStored(RECEIVED_INVITES_KEY, nextReceivedInvites);
+    setFriendsMessage(`Rechazaste la invitacion de ${invite.name}.`);
   }
 
   function toggleSetting(key) {
@@ -940,6 +1219,7 @@ export default function App() {
             <button className="new" onClick={openDifficulty}>Nueva partida</button>
             {savedGame && <button className="menu-button resume-button" onClick={resumeSavedGame}>Continuar partida</button>}
             <button className="menu-button" onClick={() => setScreen('ranking')}>Ranking</button>
+            <button className="menu-button" onClick={() => setScreen('friends')}>Amigos</button>
             <button className="menu-button" onClick={() => setScreen('rules')}>Reglas</button>
             <button className="menu-button" onClick={() => setScreen('credits')}>Creditos</button>
           </div>
@@ -1080,6 +1360,102 @@ export default function App() {
               </article>
             )) : <p className="empty">Aun no hay jugadores con rating registrado.</p>}
           </div>
+          <div className="menu-actions">
+            <button className="new" onClick={openDifficulty}>Jugar</button>
+            <button className="menu-button" onClick={() => setScreen('menu')}>Volver</button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (screen === 'friends') {
+    return (
+      <main className="app menu-screen">
+        <section className="menu-panel friends-panel">
+          <p className="eyebrow">Amistades aceptadas</p>
+          <h1>Amigos</h1>
+          <p className="friends-mode">
+            {useSupabaseFriends ? 'Conectado a Supabase' : 'Modo local hasta iniciar sesion con Supabase'}
+          </p>
+          <div className="friends-actions">
+            <button className={friendsView === 'invite' ? 'active' : ''} type="button" onClick={() => setFriendsView(friendsView === 'invite' ? 'list' : 'invite')}>
+              Invitar
+            </button>
+            <button className={friendsView === 'received' ? 'active' : ''} type="button" onClick={() => setFriendsView(friendsView === 'received' ? 'list' : 'received')}>
+              Invitaciones recibidas
+              {receivedInvites.length > 0 && <span>{receivedInvites.length}</span>}
+            </button>
+          </div>
+          {friendsView === 'invite' && (
+            <form className="friend-invite-form" onSubmit={sendFriendInvite}>
+              <label>
+                Nombre de usuario
+                <input
+                  value={inviteName}
+                  onChange={(event) => setInviteName(event.target.value)}
+                  placeholder="Ej. Juan Perez"
+                  disabled={friendsLoading}
+                />
+              </label>
+              <button className="new" type="submit" disabled={friendsLoading}>Enviar invitacion</button>
+            </form>
+          )}
+          {friendsView === 'received' && (
+            <div className="received-invites">
+              {receivedInvites.length ? receivedInvites.map((invite) => (
+                <article className="friend-item invite-item" key={invite.id}>
+                  <div className="friend-avatar">{invite.initials}</div>
+                  <div>
+                    <strong>{invite.name}</strong>
+                    <small>{invite.city} - {ratingTier(invite.rating)}</small>
+                    <em>Te envio una invitacion el {new Date(invite.sentAt).toLocaleDateString()}</em>
+                  </div>
+                  <div className="invite-actions">
+                    <button type="button" onClick={() => acceptFriendInvite(invite)} disabled={friendsLoading}>Aceptar</button>
+                    <button type="button" onClick={() => rejectFriendInvite(invite)} disabled={friendsLoading}>Rechazar</button>
+                  </div>
+                </article>
+              )) : <p className="empty">No tienes invitaciones recibidas.</p>}
+            </div>
+          )}
+          {friendsLoading && <p className="friends-message">Sincronizando...</p>}
+          {friendsMessage && <p className="friends-message">{friendsMessage}</p>}
+          <div className="friends-summary">
+            <strong>{friends.length}</strong>
+            <span>usuarios aceptaron tu invitacion</span>
+          </div>
+          <div className="friends-list">
+            {friends.length ? friends.map((friend) => (
+              <article className="friend-item" key={friend.id}>
+                <div className="friend-avatar">{friend.initials}</div>
+                <div>
+                  <strong>{friend.name}</strong>
+                  <small>{friend.city ? `${friend.city} - ` : ''}{ratingTier(friend.rating)}</small>
+                  <em>Amistad aceptada el {new Date(friend.acceptedAt).toLocaleDateString()}</em>
+                </div>
+                <div className="friend-meta">
+                  <strong>{friend.rating}</strong>
+                  <small>{friend.gamesTogether} partidas</small>
+                </div>
+              </article>
+            )) : <p className="empty">Aun no tienes amistades aceptadas.</p>}
+          </div>
+          {sentInvites.length > 0 && (
+            <div className="sent-invites">
+              <h3>Invitaciones enviadas</h3>
+              {sentInvites.map((invite) => (
+                <article className="sent-invite-item" key={invite.id}>
+                  <span>{invite.initials}</span>
+                  <div>
+                    <strong>{invite.name}</strong>
+                    <small>Enviada el {new Date(invite.sentAt).toLocaleDateString()}</small>
+                  </div>
+                  <em>{invite.status}</em>
+                </article>
+              ))}
+            </div>
+          )}
           <div className="menu-actions">
             <button className="new" onClick={openDifficulty}>Jugar</button>
             <button className="menu-button" onClick={() => setScreen('menu')}>Volver</button>

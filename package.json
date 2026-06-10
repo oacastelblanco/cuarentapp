@@ -13,10 +13,10 @@
     "node": ">=20.19.0"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.108.1",
     "@vitejs/plugin-react": "6.0.2",
-    "vite": "8.0.13",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
-  },
-  "devDependencies": {}
+    "react-dom": "19.2.6",
+    "vite": "8.0.13"
+  }
 }
