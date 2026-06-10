@@ -76,6 +76,7 @@ as $$
 declare
   raw_username text;
   safe_username text;
+  final_username text;
 begin
   raw_username := coalesce(
     new.raw_user_meta_data->>'username',
@@ -87,12 +88,17 @@ begin
   if length(safe_username) < 3 then
     safe_username := 'jugador';
   end if;
-  safe_username := left(safe_username, 15) || '_' || left(replace(new.id::text, '-', ''), 8);
+  safe_username := left(safe_username, 24);
+  final_username := safe_username;
+
+  if exists (select 1 from public.profiles where username = final_username) then
+    final_username := left(safe_username, 15) || '_' || left(replace(new.id::text, '-', ''), 8);
+  end if;
 
   insert into public.profiles (id, username, display_name)
   values (
     new.id,
-    safe_username,
+    final_username,
     coalesce(new.raw_user_meta_data->>'display_name', new.raw_user_meta_data->>'name', split_part(new.email, '@', 1), 'Jugador')
   )
   on conflict (id) do nothing;

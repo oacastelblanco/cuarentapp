@@ -16,7 +16,7 @@ const CARD_BACK_LOGO = '/images/card-back-logo-2.png';
 const MAIN_MENU_LOGO = '/images/cuarenta-menu-logo.png';
 const DEAL_SOUND_SPACING_MS = 290;
 const STARTING_RATING = 1200;
-const EMPTY_PROFILE = { name: '', city: '', email: '', photo: '', rating: STARTING_RATING, games: 0, wins: 0, losses: 0 };
+const EMPTY_PROFILE = { username: '', name: '', city: '', email: '', photo: '', rating: STARTING_RATING, games: 0, wins: 0, losses: 0 };
 const DIFFICULTIES = {
   beginner: { label: 'Principiante', description: 'El rival juega rapido y no siempre aprovecha capturas.', rating: 900 },
   intermediate: { label: 'Intermedio', description: 'El rival busca capturas y bonificaciones razonables.', rating: 1200 },
@@ -105,10 +105,53 @@ function mapInviteRow(row, direction = 'received') {
   };
 }
 
+function roomStatusLabel(status) {
+  if (status === 'waiting') return 'Esperando rival';
+  if (status === 'playing') return 'Lista para jugar';
+  if (status === 'finished') return 'Finalizada';
+  return 'Cancelada';
+}
+
+function mapRoomPlayer(row) {
+  const name = profileDisplayName(row.profile);
+  return {
+    id: row.id,
+    userId: row.user_id,
+    seat: row.seat,
+    isReady: row.is_ready,
+    joinedAt: row.joined_at,
+    name,
+    city: row.profile?.city || '',
+    rating: row.profile?.rating || STARTING_RATING,
+    initials: makeInitials(name).toUpperCase(),
+  };
+}
+
+function buildOnlineActionAnimation(action) {
+  const payload = action?.payload || {};
+  const seat = Number(payload.seat);
+  const card = payload.card;
+  const capturedCards = payload.capturedCards || [];
+  if (!seat || !card) return null;
+  return {
+    actor: seat,
+    card,
+    cardId: card.id,
+    capturedCards,
+    capturedIds: capturedCards.map((c) => c.id),
+    summedIds: payload.summedIds || [],
+    forfeitedIds: payload.forfeitedIds || [],
+    kind: capturedCards.length ? 'capture' : 'place',
+    stage: 'move',
+    moveSoundType: payload.moveSoundType || 'normal',
+  };
+}
+
 function normalizeProfile(profile) {
   return {
     ...EMPTY_PROFILE,
     ...profile,
+    username: profile?.username || '',
     rating: Number.isFinite(profile?.rating) ? profile.rating : STARTING_RATING,
     games: Number.isFinite(profile?.games) ? profile.games : 0,
     wins: Number.isFinite(profile?.wins) ? profile.wins : 0,
@@ -372,6 +415,160 @@ function maybeEndDeal(state) {
   };
 }
 
+function seatKey(seat) {
+  return seat === 1 ? 'p1' : 'p2';
+}
+
+function nextSeat(seat) {
+  return seat === 1 ? 2 : 1;
+}
+
+function onlinePlayerLabel(state, seat) {
+  if (!seat) return 'Rival';
+  return state.playerNames?.[seat] || `Jugador ${seat}`;
+}
+
+function dealOnlineFive(state) {
+  const deck = [...state.deck];
+  const p1Hand = deck.splice(0, 5);
+  const p2Hand = deck.splice(0, 5);
+  const p1Bonus = rondaBonus(p1Hand, state.score.p1);
+  const p2Bonus = rondaBonus(p2Hand, state.score.p2);
+  let score = { ...state.score };
+  const logs = [...state.logs];
+
+  if (p1Bonus.instantWin) score.p1 = 40;
+  if (p2Bonus.instantWin) score.p2 = 40;
+  if (p1Bonus.points) score.p1 = capScore(score.p1 + p1Bonus.points);
+  if (p2Bonus.points) score.p2 = capScore(score.p2 + p2Bonus.points);
+  if (p1Bonus.message) logs.unshift(`${onlinePlayerLabel(state, 1)}: ${p1Bonus.message}`);
+  if (p2Bonus.message) logs.unshift(`${onlinePlayerLabel(state, 2)}: ${p2Bonus.message}`);
+
+  return { ...state, deck, p1Hand, p2Hand, score, logs };
+}
+
+function newOnlineGame(players) {
+  const sortedPlayers = [...players].sort((a, b) => a.seat - b.seat);
+  const playerIds = {};
+  const playerNames = {};
+  sortedPlayers.forEach((player) => {
+    playerIds[player.seat] = player.userId;
+    playerNames[player.seat] = player.name;
+  });
+
+  const deck = shuffle(makeDeck());
+  const base = {
+    deck,
+    p1Hand: [],
+    p2Hand: [],
+    table: [],
+    p1Captured: [],
+    p2Captured: [],
+    score: { p1: 0, p2: 0 },
+    turnSeat: 1,
+    phase: 'playing',
+    selectedTableIds: [],
+    message: '',
+    pending: null,
+    lastPlayed: null,
+    logs: ['Partida online iniciada.'],
+    playerIds,
+    playerNames,
+    matchId: uid(),
+  };
+  return dealOnlineFive(base);
+}
+
+function onlineEndChica(state) {
+  const p1Carton = cartonBonus(state.p1Captured.length);
+  const p2Carton = cartonBonus(state.p2Captured.length);
+  const score = {
+    p1: capScore(state.score.p1 + p1Carton),
+    p2: capScore(state.score.p2 + p2Carton),
+  };
+  const logs = [
+    `Conteo: ${onlinePlayerLabel(state, 1)} +${p1Carton}, ${onlinePlayerLabel(state, 2)} +${p2Carton}.`,
+    ...state.logs,
+  ];
+
+  if (score.p1 >= 40 || score.p2 >= 40) {
+    const winnerSeat = score.p1 >= 40 ? 1 : 2;
+    return {
+      ...state,
+      score,
+      logs: [`${onlinePlayerLabel(state, winnerSeat)} gano la partida online.`, ...logs],
+      phase: 'ended',
+      turnSeat: null,
+      message: 'Partida finalizada.',
+    };
+  }
+
+  const deck = shuffle(makeDeck());
+  return dealOnlineFive({
+    ...state,
+    deck,
+    p1Hand: [],
+    p2Hand: [],
+    table: [],
+    p1Captured: [],
+    p2Captured: [],
+    score,
+    logs: ['Nueva chica online. Se conservan los puntos.', ...logs],
+    turnSeat: nextSeat(state.turnSeat || 1),
+    phase: 'playing',
+    selectedTableIds: [],
+    message: '',
+    pending: null,
+    lastPlayed: null,
+  });
+}
+
+function maybeAdvanceOnlineDeal(state) {
+  if (state.p1Hand.length || state.p2Hand.length) return state;
+  if (state.deck.length >= 10) return dealOnlineFive(state);
+  return onlineEndChica(state);
+}
+
+function applyOnlineMove(state, seat, card, capturedCards) {
+  const key = seatKey(seat);
+  const handKey = `${key}Hand`;
+  const capturedKey = `${key}Captured`;
+  const newHand = state[handKey].filter((c) => c.id !== card.id);
+  const removedIds = new Set(capturedCards.map((c) => c.id));
+  const hadCapture = capturedCards.length > 0;
+  const newTable = hadCapture
+    ? state.table.filter((c) => !removedIds.has(c.id))
+    : [...state.table, card];
+  const last = state.lastPlayed;
+  const caida = hadCapture && isCaidaCapture(last, seat, card, capturedCards);
+  const limpia = hadCapture && newTable.length === 0;
+  let bonus = 0;
+  const current = state.score[key];
+  if (caida) bonus += 2;
+  if (limpia && current !== 38) bonus += 2;
+  const score = { ...state.score, [key]: capScore(current + bonus) };
+  const captureText = hadCapture ? `capturo ${capturedCards.map(cardName).join(', ')}` : 'puso carta en mesa';
+  const bonusText = [caida ? 'Caida +2' : '', limpia && current !== 38 ? 'Limpia +2' : ''].filter(Boolean).join(' / ');
+  const logs = [
+    `${onlinePlayerLabel(state, seat)} jugo ${cardName(card)} y ${captureText}${bonusText ? ` (${bonusText})` : ''}.`,
+    ...state.logs,
+  ];
+
+  return maybeAdvanceOnlineDeal({
+    ...state,
+    [handKey]: newHand,
+    [capturedKey]: hadCapture ? [...state[capturedKey], card, ...capturedCards] : state[capturedKey],
+    table: newTable,
+    score,
+    logs,
+    lastPlayed: hadCapture ? null : { actor: seat, card },
+    turnSeat: nextSeat(seat),
+    pending: null,
+    selectedTableIds: [],
+    message: '',
+  });
+}
+
 function scoreCpuMove(state, card, opt, difficulty) {
   const last = state.lastPlayed;
   const caida = isCaidaCapture(last, 'cpu', card, opt);
@@ -501,6 +698,20 @@ export default function App() {
   const [friendsMessage, setFriendsMessage] = useState('');
   const [supabaseUser, setSupabaseUser] = useState(null);
   const [friendsLoading, setFriendsLoading] = useState(false);
+  const [authMode, setAuthMode] = useState('login');
+  const [authDraft, setAuthDraft] = useState({ email: '', password: '', username: '', name: '', city: '' });
+  const [authMessage, setAuthMessage] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [onlineRoom, setOnlineRoom] = useState(null);
+  const [onlinePlayers, setOnlinePlayers] = useState([]);
+  const [onlineGameState, setOnlineGameState] = useState(null);
+  const [onlineGameVersion, setOnlineGameVersion] = useState(0);
+  const [onlineAnimation, setOnlineAnimation] = useState(null);
+  const [onlineLastAction, setOnlineLastAction] = useState(null);
+  const [onlineSelectedTableIds, setOnlineSelectedTableIds] = useState([]);
+  const [onlineJoinCode, setOnlineJoinCode] = useState('');
+  const [onlineMessage, setOnlineMessage] = useState('');
+  const [onlineLoading, setOnlineLoading] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState({ sound: true, animations: true, hints: true });
   const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
@@ -518,9 +729,19 @@ export default function App() {
   const countTickSoundRef = useRef(null);
   const dealSoundTimersRef = useRef([]);
   const toastTimerRef = useRef(null);
+  const onlineMatchSoundRef = useRef(null);
+  const onlineAnimatedActionRef = useRef(null);
+  const onlineLocalAnimationUntilRef = useRef(null);
+  const onlineGameVersionRef = useRef(onlineGameVersion);
+  const supabaseUserRef = useRef(supabaseUser);
+  const settingsRef = useRef(settings);
+  onlineGameVersionRef.current = onlineGameVersion;
+  supabaseUserRef.current = supabaseUser;
+  settingsRef.current = settings;
   const selectedTableCards = useMemo(() => game.table.filter((c) => game.selectedTableIds.includes(c.id)), [game]);
   const isAnimating = Boolean(game.animation);
   const hasProfile = Boolean(profile.name.trim());
+  const shouldShowProfileSummary = hasProfile && (!isSupabaseConfigured || Boolean(supabaseUser));
   const useSupabaseFriends = Boolean(isSupabaseConfigured && supabaseUser);
 
   useEffect(() => {
@@ -576,6 +797,72 @@ export default function App() {
   }, [useSupabaseFriends, supabaseUser?.id]);
 
   useEffect(() => {
+    if (!isSupabaseConfigured || !supabaseUser) return;
+    loadSupabaseProfile();
+  }, [supabaseUser?.id]);
+
+  useEffect(() => {
+    if (!supabase || !onlineRoom?.id) return undefined;
+    const channel = supabase
+      .channel(`live-room-${onlineRoom.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'live_rooms', filter: `id=eq.${onlineRoom.id}` }, () => {
+        loadOnlineRoom(onlineRoom.id);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'live_room_players', filter: `room_id=eq.${onlineRoom.id}` }, () => {
+        loadOnlineRoom(onlineRoom.id);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'live_game_state', filter: `room_id=eq.${onlineRoom.id}` }, () => {
+        loadOnlineRoom(onlineRoom.id);
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'live_game_actions', filter: `room_id=eq.${onlineRoom.id}` }, () => {
+        loadOnlineRoom(onlineRoom.id);
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [onlineRoom?.id]);
+
+  useEffect(() => {
+    if (!onlineRoom?.id || !supabaseUser) return undefined;
+    if (screen !== 'online' && screen !== 'onlineGame') return undefined;
+
+    loadOnlineRoom(onlineRoom.id);
+    const timer = setInterval(() => {
+      loadOnlineRoom(onlineRoom.id);
+    }, onlineRoom.status === 'waiting' ? 1800 : 3500);
+
+    return () => clearInterval(timer);
+  }, [onlineRoom?.id, onlineRoom?.status, screen, supabaseUser?.id]);
+
+  useEffect(() => {
+    if (screen !== 'onlineGame' || !onlineGameState?.matchId) return;
+    if (onlineMatchSoundRef.current === onlineGameState.matchId) return;
+    onlineMatchSoundRef.current = onlineGameState.matchId;
+    playDealSounds();
+  }, [screen, onlineGameState?.matchId]);
+
+  useEffect(() => {
+    if (screen !== 'onlineGame' || !onlineLastAction || !onlineGameState || !supabaseUser) return;
+    if (onlineLastAction.action_type === 'start') return;
+    if (onlineLastAction.user_id === supabaseUser.id) return;
+    if (onlineAnimatedActionRef.current === onlineLastAction.id) return;
+
+    const animation = buildOnlineActionAnimation(onlineLastAction);
+    if (!animation) return;
+
+    onlineAnimatedActionRef.current = onlineLastAction.id;
+
+    playMoveSound(animation.moveSoundType);
+    showMoveToast(animation.moveSoundType);
+    if (!settings.animations) return;
+    setOnlineAnimation(animation);
+    const timer = setTimeout(() => setOnlineAnimation(null), 760);
+    return () => clearTimeout(timer);
+  }, [screen, onlineLastAction?.id, onlineGameState?.matchId, supabaseUser?.id, settings.animations, settings.sound]);
+
+  useEffect(() => {
     if (game.phase !== 'ended' || game.historySaved) return;
     const didWin = game.score.player >= game.score.cpu;
     const result = didWin ? 'Victoria' : 'Derrota';
@@ -607,6 +894,7 @@ export default function App() {
     setProfile(nextProfile);
     setProfileDraft(nextProfile);
     writeStored(PROFILE_KEY, nextProfile);
+    syncSupabaseProfile(nextProfile);
     setHistory(nextHistory);
     writeStored(HISTORY_KEY, nextHistory);
     setGame((current) => current.matchId === game.matchId ? { ...current, historySaved: true } : current);
@@ -694,13 +982,404 @@ export default function App() {
     setScreen('game');
   }
 
-  async function syncSupabaseProfile(nextProfile = profile) {
-    if (!useSupabaseFriends || !supabaseUser) return;
+  function openProfile() {
+    if (!supabaseUser) {
+      setAuthMode('login');
+      setAuthMessage('');
+      setScreen('auth');
+      return;
+    }
+    setScreen('profile');
+  }
+
+  function openOnlineLobby() {
+    if (!supabaseUser) {
+      setAuthMode('login');
+      setAuthMessage('Inicia sesion para jugar partidas online.');
+      setScreen('auth');
+      return;
+    }
+    setOnlineMessage('');
+    setScreen('online');
+  }
+
+  function normalizeUsername(value) {
+    const username = value.trim().toLocaleLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24);
+    return username.length >= 3 ? username : 'jugador';
+  }
+
+  async function loadSupabaseProfile(user = supabaseUser) {
+    if (!user || !supabase) return;
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id,username,display_name,city,avatar_url,rating,games,wins,losses')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    if (error) {
+      setAuthMessage(error.message);
+      return;
+    }
+
+    const nextProfile = normalizeProfile({
+      username: data?.username || '',
+      name: data?.display_name || user.email?.split('@')[0] || '',
+      city: data?.city || '',
+      email: user.email || '',
+      photo: data?.avatar_url || '',
+      rating: data?.rating,
+      games: data?.games,
+      wins: data?.wins,
+      losses: data?.losses,
+    });
+    setProfile(nextProfile);
+    setProfileDraft(nextProfile);
+    writeStored(PROFILE_KEY, nextProfile);
+  }
+
+  async function submitAuth(event) {
+    event.preventDefault();
+    if (!supabase) {
+      setAuthMessage('Configura VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY para iniciar sesion.');
+      return;
+    }
+
+    setAuthLoading(true);
+    setAuthMessage('');
+    const email = authDraft.email.trim();
+    const password = authDraft.password;
+
+    if (authMode === 'register') {
+      const username = normalizeUsername(authDraft.username || email.split('@')[0]);
+      if (username.length < 3) {
+        setAuthMessage('El nombre de usuario debe tener al menos 3 caracteres.');
+        setAuthLoading(false);
+        return;
+      }
+
+      const displayName = authDraft.name.trim() || username;
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            username,
+            display_name: displayName,
+            name: displayName,
+          },
+        },
+      });
+
+      if (error) {
+        setAuthMessage(error.message);
+        setAuthLoading(false);
+        return;
+      }
+
+      if (data.user) {
+        setSupabaseUser(data.user);
+        const nextProfile = normalizeProfile({
+          username,
+          name: displayName,
+          city: authDraft.city.trim(),
+          email,
+          rating: STARTING_RATING,
+        });
+        setProfile(nextProfile);
+        setProfileDraft(nextProfile);
+        writeStored(PROFILE_KEY, nextProfile);
+        if (data.session) await syncSupabaseProfile(nextProfile, data.user);
+      }
+
+      setAuthDraft({ email: '', password: '', username: '', name: '', city: '' });
+      setAuthLoading(false);
+      if (data.session) {
+        setScreen('profile');
+      } else {
+        setAuthMessage('Revisa tu correo para confirmar la cuenta y luego inicia sesion.');
+        setAuthMode('login');
+      }
+      return;
+    }
+
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      setAuthMessage(error.message);
+      setAuthLoading(false);
+      return;
+    }
+
+    setSupabaseUser(data.user || null);
+    await loadSupabaseProfile(data.user);
+    setAuthDraft({ email: '', password: '', username: '', name: '', city: '' });
+    setAuthLoading(false);
+    setScreen('profile');
+  }
+
+  async function signOut() {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    setSupabaseUser(null);
+    setOnlineRoom(null);
+    setOnlinePlayers([]);
+    setScreen('menu');
+  }
+
+  async function loadOnlineRoom(roomId) {
+    if (!supabase || !roomId) return;
+    const [roomResult, playersResult, stateResult, actionResult] = await Promise.all([
+      supabase
+        .from('live_rooms')
+        .select('id,code,host_id,status,max_players,created_at,started_at,finished_at')
+        .eq('id', roomId)
+        .maybeSingle(),
+      supabase
+        .from('live_room_players')
+        .select('id,room_id,user_id,seat,is_ready,joined_at,profile:profiles(id,username,display_name,city,rating)')
+        .eq('room_id', roomId)
+        .order('seat', { ascending: true }),
+      supabase
+        .from('live_game_state')
+        .select('room_id,state,turn_user_id,version,updated_at')
+        .eq('room_id', roomId)
+        .maybeSingle(),
+      supabase
+        .from('live_game_actions')
+        .select('id,room_id,user_id,action_type,payload,version,created_at')
+        .eq('room_id', roomId)
+        .order('version', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    if (roomResult.error || playersResult.error || stateResult.error || actionResult.error) {
+      setOnlineMessage(roomResult.error?.message || playersResult.error?.message || stateResult.error?.message || actionResult.error?.message);
+      return;
+    }
+
+    const nextState = stateResult.data?.state && Object.keys(stateResult.data.state).length ? stateResult.data.state : null;
+    const nextAction = actionResult.data || null;
+    const nextVersion = stateResult.data?.version || 0;
+    const currentUserId = supabaseUserRef.current?.id;
+    const currentVersion = onlineGameVersionRef.current;
+    const animationsEnabled = settingsRef.current.animations;
+    const localAnimationHold = onlineLocalAnimationUntilRef.current;
+    const shouldHoldLocalState = Boolean(
+      localAnimationHold &&
+      localAnimationHold.roomId === roomId &&
+      localAnimationHold.until > Date.now() &&
+      nextAction?.user_id === currentUserId &&
+      nextVersion > currentVersion
+    );
+    if (shouldHoldLocalState) {
+      setOnlineRoom(roomResult.data || null);
+      setOnlinePlayers((playersResult.data || []).map(mapRoomPlayer));
+      setTimeout(() => loadOnlineRoom(roomId), localAnimationHold.until - Date.now() + 20);
+      return;
+    }
+
+    const isNewRemoteVersion = Boolean(
+      nextState &&
+      nextVersion > currentVersion &&
+      stateResult.data?.turn_user_id !== currentUserId
+    );
+    if (isNewRemoteVersion && nextVersion > 1 && nextAction?.version !== nextVersion) {
+      setTimeout(() => loadOnlineRoom(roomId), 50);
+      return;
+    }
+
+    if (
+      nextAction &&
+      nextAction.action_type !== 'start' &&
+      nextAction.user_id !== currentUserId &&
+      onlineAnimatedActionRef.current !== nextAction.id &&
+      animationsEnabled
+    ) {
+      setOnlineAnimation(buildOnlineActionAnimation(nextAction));
+    }
+
+    setOnlineRoom(roomResult.data || null);
+    setOnlinePlayers((playersResult.data || []).map(mapRoomPlayer));
+    setOnlineGameState(nextState);
+    setOnlineGameVersion(nextVersion);
+    setOnlineLastAction(nextAction);
+  }
+
+  async function createOnlineRoom() {
+    if (!supabase || !supabaseUser) {
+      setOnlineMessage('Inicia sesion para crear una sala online.');
+      return;
+    }
+    setOnlineLoading(true);
+    setOnlineMessage('');
+    await syncSupabaseProfile();
+    const { data, error } = await supabase.rpc('create_live_room');
+    if (error) {
+      setOnlineMessage(error.message);
+      setOnlineLoading(false);
+      return;
+    }
+
+    const room = Array.isArray(data) ? data[0] : data;
+    setOnlineRoom(room);
+    await loadOnlineRoom(room.id);
+    setOnlineLoading(false);
+  }
+
+  async function joinOnlineRoom(event) {
+    event.preventDefault();
+    if (!supabase || !supabaseUser) {
+      setOnlineMessage('Inicia sesion para unirte a una sala online.');
+      return;
+    }
+    const code = onlineJoinCode.trim().toLocaleUpperCase();
+    if (!code) return;
+
+    setOnlineLoading(true);
+    setOnlineMessage('');
+    await syncSupabaseProfile();
+    const { data, error } = await supabase.rpc('join_live_room', { room_code: code });
+    if (error) {
+      setOnlineMessage(error.message);
+      setOnlineLoading(false);
+      return;
+    }
+
+    const room = Array.isArray(data) ? data[0] : data;
+    setOnlineJoinCode('');
+    setOnlineRoom(room);
+    await loadOnlineRoom(room.id);
+    setOnlineLoading(false);
+  }
+
+  function closeOnlineRoom() {
+    setOnlineRoom(null);
+    setOnlinePlayers([]);
+    setOnlineGameState(null);
+    setOnlineGameVersion(0);
+    setOnlineSelectedTableIds([]);
+    setOnlineMessage('');
+  }
+
+  async function startOnlineGame() {
+    if (!supabase || !onlineRoom || onlinePlayers.length < 2) return;
+    setOnlineLoading(true);
+    setOnlineMessage('');
+    const nextState = newOnlineGame(onlinePlayers);
+    const firstTurnUserId = nextState.playerIds?.[nextState.turnSeat];
+    const { error } = await supabase.rpc('start_live_game', {
+      target_room_id: onlineRoom.id,
+      initial_state: nextState,
+      first_turn_user_id: firstTurnUserId,
+    });
+
+    if (error) {
+      setOnlineMessage(error.message);
+      setOnlineLoading(false);
+      return;
+    }
+
+    setOnlineGameState(nextState);
+    setOnlineSelectedTableIds([]);
+    await loadOnlineRoom(onlineRoom.id);
+    setScreen('onlineGame');
+    setOnlineLoading(false);
+  }
+
+  async function submitOnlineMove(card) {
+    if (!supabase || !onlineRoom || !onlineGameState || !supabaseUser) return;
+    const mySeat = Number(Object.entries(onlineGameState.playerIds || {}).find(([, id]) => id === supabaseUser.id)?.[0]);
+    if (!mySeat || onlineGameState.turnSeat !== mySeat || onlineGameState.phase !== 'playing') return;
+
+    const selectedCards = onlineGameState.table.filter((c) => onlineSelectedTableIds.includes(c.id));
+    const result = resolveManualCapture(card, onlineGameState.table, selectedCards);
+    if (!result.ok) {
+      setOnlineMessage(`Esa captura no es valida con ${cardName(card)}.`);
+      return;
+    }
+
+    const nextState = applyOnlineMove(onlineGameState, mySeat, card, result.captured);
+    const nextTurnUserId = nextState.turnSeat ? nextState.playerIds?.[nextState.turnSeat] : null;
+    const moveSoundType = getMoveSoundType(onlineGameState, mySeat, card, result.captured);
+    const animation = {
+      actor: mySeat,
+      cardId: card.id,
+      capturedIds: result.captured.map((c) => c.id),
+      summedIds: result.base.length >= 2 ? result.base.map((c) => c.id) : [],
+      forfeitedIds: result.forfeited.map((c) => c.id),
+      kind: result.captured.length ? 'capture' : 'place',
+      stage: 'move',
+    };
+
+    if (result.forfeited.length) {
+      showToastMessage('Atencion: perdiste la oportunidad de tomar mas cartas de la escalera.', 2400);
+    } else {
+      showMoveToast(moveSoundType);
+    }
+    playMoveSound(moveSoundType);
+    setOnlineAnimation(settings.animations ? animation : null);
+    setOnlineLoading(true);
+    setOnlineMessage('');
+    const animationUntil = settings.animations ? Date.now() + 720 : 0;
+    onlineLocalAnimationUntilRef.current = animationUntil ? { roomId: onlineRoom.id, until: animationUntil } : null;
+
+    const { data: committedVersion, error } = await supabase.rpc('submit_live_game_state', {
+      target_room_id: onlineRoom.id,
+      expected_version: onlineGameVersion,
+      next_state: nextState,
+      next_turn_user_id: nextTurnUserId,
+      action_type: result.captured.length ? 'capture' : 'place',
+      action_payload: {
+        card,
+        capturedCards: result.captured,
+        seat: mySeat,
+        moveSoundType,
+        summedIds: animation.summedIds,
+        forfeitedIds: animation.forfeitedIds,
+      },
+    });
+
+    if (error) {
+      setOnlineMessage(error.message);
+      setOnlineLoading(false);
+      setOnlineAnimation(null);
+      onlineLocalAnimationUntilRef.current = null;
+      await loadOnlineRoom(onlineRoom.id);
+      return;
+    }
+
+    const remainingAnimationMs = Math.max(0, animationUntil - Date.now());
+    if (remainingAnimationMs) {
+      await new Promise((resolve) => setTimeout(resolve, remainingAnimationMs));
+    }
+
+    onlineLocalAnimationUntilRef.current = null;
+    setOnlineGameState(nextState);
+    setOnlineSelectedTableIds([]);
+    setOnlineAnimation(null);
+    setOnlineGameVersion(Number(committedVersion) || onlineGameVersion + 1);
+    await loadOnlineRoom(onlineRoom.id);
+    setOnlineLoading(false);
+  }
+
+  function toggleOnlineTableCard(card) {
+    if (!onlineGameState || onlineGameState.phase !== 'playing') return;
+    const mySeat = Number(Object.entries(onlineGameState.playerIds || {}).find(([, id]) => id === supabaseUser?.id)?.[0]);
+    if (!mySeat || onlineGameState.turnSeat !== mySeat) return;
+    setOnlineSelectedTableIds((current) => (
+      current.includes(card.id) ? current.filter((id) => id !== card.id) : [...current, card.id]
+    ));
+  }
+
+  async function syncSupabaseProfile(nextProfile = profile, user = supabaseUser) {
+    if (!isSupabaseConfigured || !supabase || !user) return;
+    const username = normalizeUsername(nextProfile.username || nextProfile.name || user.email?.split('@')[0] || 'jugador');
     const { error } = await supabase
       .from('profiles')
       .upsert({
-        id: supabaseUser.id,
-        display_name: nextProfile.name.trim() || supabaseUser.email?.split('@')[0] || 'Jugador',
+        id: user.id,
+        username,
+        display_name: nextProfile.name.trim() || user.email?.split('@')[0] || 'Jugador',
         city: nextProfile.city.trim(),
         avatar_url: nextProfile.photo || null,
         rating: Math.round(nextProfile.rating || STARTING_RATING),
@@ -753,6 +1432,7 @@ export default function App() {
     event.preventDefault();
     const nextProfile = {
       ...profile,
+      username: normalizeUsername(profileDraft.username || profileDraft.name),
       name: profileDraft.name.trim(),
       city: profileDraft.city.trim(),
       email: profileDraft.email.trim(),
@@ -1199,29 +1879,343 @@ export default function App() {
 
     return [...players.values()].sort((a, b) => b.rating - a.rating || a.name.localeCompare(b.name));
   }, [hasProfile, history, profile]);
+  const myOnlineSeat = onlineGameState && supabaseUser
+    ? Number(Object.entries(onlineGameState.playerIds || {}).find(([, id]) => id === supabaseUser.id)?.[0])
+    : null;
+  const rivalOnlineSeat = myOnlineSeat ? nextSeat(myOnlineSeat) : null;
+  const myOnlineKey = myOnlineSeat ? seatKey(myOnlineSeat) : null;
+  const rivalOnlineKey = rivalOnlineSeat ? seatKey(rivalOnlineSeat) : null;
+  const myOnlineHand = myOnlineKey ? onlineGameState?.[`${myOnlineKey}Hand`] || [] : [];
+  const rivalOnlineHand = rivalOnlineKey ? onlineGameState?.[`${rivalOnlineKey}Hand`] || [] : [];
+  const myOnlineCaptured = myOnlineKey ? onlineGameState?.[`${myOnlineKey}Captured`] || [] : [];
+  const rivalOnlineCaptured = rivalOnlineKey ? onlineGameState?.[`${rivalOnlineKey}Captured`] || [] : [];
+  const isMyOnlineTurn = Boolean(myOnlineSeat && onlineGameState?.turnSeat === myOnlineSeat && onlineGameState?.phase === 'playing');
+  const onlineTableCardsForRender = onlineGameState
+    ? [
+        ...onlineGameState.table.filter((card) => !(
+          onlineAnimation?.actor === rivalOnlineSeat &&
+          onlineAnimation?.kind === 'place' &&
+          onlineAnimation?.cardId === card.id
+        )),
+        ...((onlineAnimation?.capturedCards || []).filter((card) => !onlineGameState.table.some((tableCard) => tableCard.id === card.id))),
+      ]
+    : [];
+  const onlineWinnerSeat = onlineGameState?.phase === 'ended'
+    ? (onlineGameState.score?.p1 >= onlineGameState.score?.p2 ? 1 : 2)
+    : null;
 
   if (screen === 'menu') {
     return (
       <main className="app menu-screen main-menu-screen">
         <section className="menu-panel">
           <p className="eyebrow">Juego ecuatoriano de cartas</p>
-          <button className="menu-profile-summary" type="button" onClick={() => setScreen('profile')} aria-label="Abrir perfil">
+          <button className="menu-profile-summary" type="button" onClick={openProfile} aria-label="Abrir perfil">
             <div className="profile-photo menu-profile-photo">
-              {profile.photo ? <img src={profile.photo} alt="Foto de perfil" /> : <span>{profile.name.trim().charAt(0) || '?'}</span>}
+              {shouldShowProfileSummary && profile.photo ? <img src={profile.photo} alt="Foto de perfil" /> : <span>{shouldShowProfileSummary ? profile.name.trim().charAt(0) : '?'}</span>}
             </div>
             <div>
-              <strong>{hasProfile ? profile.name.trim() : 'Iniciar sesión'}</strong>
-              <small>Rating: {hasProfile ? playerRating : '?'}</small>
+              <strong>{shouldShowProfileSummary ? profile.name.trim() : 'Iniciar sesion'}</strong>
+              <small>Rating: {shouldShowProfileSummary ? playerRating : '?'}</small>
             </div>
           </button>
           <img className="main-menu-logo" src={MAIN_MENU_LOGO} alt="Cuarenta" />
           <div className="menu-actions">
             <button className="new" onClick={openDifficulty}>Nueva partida</button>
             {savedGame && <button className="menu-button resume-button" onClick={resumeSavedGame}>Continuar partida</button>}
+            <button className="menu-button" onClick={openOnlineLobby}>Partida online</button>
             <button className="menu-button" onClick={() => setScreen('ranking')}>Ranking</button>
             <button className="menu-button" onClick={() => setScreen('friends')}>Amigos</button>
             <button className="menu-button" onClick={() => setScreen('rules')}>Reglas</button>
             <button className="menu-button" onClick={() => setScreen('credits')}>Creditos</button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (screen === 'online') {
+    return (
+      <main className="app menu-screen">
+        <section className="menu-panel online-panel">
+          <p className="eyebrow">Multijugador</p>
+          <h1>Online</h1>
+          {!supabaseUser ? (
+            <div className="auth-local-card">
+              <p>Inicia sesion para crear o unirte a partidas online.</p>
+            </div>
+          ) : onlineRoom ? (
+            <div className="online-room">
+              <div className="online-room-code">
+                <span>Codigo de sala</span>
+                <strong>{onlineRoom.code}</strong>
+                <small>{roomStatusLabel(onlineRoom.status)}</small>
+              </div>
+              <div className="online-player-list">
+                {onlinePlayers.map((player) => (
+                  <article className="online-player-item" key={player.id}>
+                    <div className="friend-avatar">{player.initials}</div>
+                    <div>
+                      <strong>{player.name}</strong>
+                      <small>Asiento {player.seat} - {ratingTier(player.rating)}</small>
+                    </div>
+                    <em>{player.isReady ? 'Listo' : 'En lobby'}</em>
+                  </article>
+                ))}
+                {Array.from({ length: Math.max(0, (onlineRoom.max_players || 2) - onlinePlayers.length) }).map((_, index) => (
+                  <article className="online-player-item online-player-empty" key={`empty-${index}`}>
+                    <div className="friend-avatar">?</div>
+                    <div>
+                      <strong>Esperando jugador</strong>
+                      <small>Comparte el codigo {onlineRoom.code}</small>
+                    </div>
+                  </article>
+                ))}
+              </div>
+              <div className="online-room-note">
+                {onlineRoom.status === 'playing'
+                  ? 'La sala ya tiene dos jugadores. El siguiente paso sera abrir la mesa online sincronizada.'
+                  : 'Cuando entre otro jugador, este lobby se actualizara automaticamente.'}
+              </div>
+              <div className="online-actions">
+                {onlinePlayers.length >= 2 && !onlineGameState && onlineRoom.host_id === supabaseUser?.id && (
+                  <button className="new" type="button" onClick={startOnlineGame} disabled={onlineLoading}>Iniciar partida online</button>
+                )}
+                {onlineGameState && (
+                  <button className="new" type="button" onClick={() => setScreen('onlineGame')}>Abrir mesa online</button>
+                )}
+                <button className="menu-button" type="button" onClick={closeOnlineRoom}>Salir del lobby</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="online-actions">
+                <button className="new" type="button" onClick={createOnlineRoom} disabled={onlineLoading}>Crear sala</button>
+              </div>
+              <form className="online-join-form" onSubmit={joinOnlineRoom}>
+                <label>
+                  Codigo de sala
+                  <input
+                    value={onlineJoinCode}
+                    onChange={(event) => setOnlineJoinCode(event.target.value.toLocaleUpperCase())}
+                    placeholder="ABC123"
+                    maxLength={8}
+                    disabled={onlineLoading}
+                  />
+                </label>
+                <button className="menu-button" type="submit" disabled={onlineLoading}>Unirme</button>
+              </form>
+            </>
+          )}
+          {onlineLoading && <p className="friends-message">Sincronizando sala...</p>}
+          {onlineMessage && <p className="friends-message">{onlineMessage}</p>}
+          <div className="menu-actions">
+            <button className="menu-button" onClick={() => setScreen('menu')}>Volver</button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (screen === 'onlineGame' && onlineGameState) {
+    return (
+      <main className="app game-screen">
+        {onlineWinnerSeat && (
+          <div className="banner">
+            {onlineWinnerSeat === myOnlineSeat ? 'Ganaste' : 'Gano el rival'} la partida online.
+          </div>
+        )}
+        <section className="board online-game-board">
+          <div className="row-header player-hand-header human-hand-header">
+            <div className="game-profile">
+              <div className="game-profile-photo rival-photo">
+                <span>{rivalOnlineSeat || '?'}</span>
+              </div>
+              <div>
+                <h2>{onlinePlayerLabel(onlineGameState, rivalOnlineSeat)}</h2>
+                <small>{onlineGameState.turnSeat === rivalOnlineSeat ? 'Turno del rival' : 'Esperando'}</small>
+              </div>
+            </div>
+          </div>
+
+          <div className="play-row cpu-play-row">
+            <div className="player-stats compact-stats cpu-card-stats">
+              <div className="inline-score"><span>Puntos</span><strong>{rivalOnlineKey ? onlineGameState.score?.[rivalOnlineKey] : 0}</strong></div>
+              <div className="inline-score captured-box"><span>Capturadas</span><strong>{rivalOnlineCaptured.length}</strong></div>
+            </div>
+            <div className="hand compact">
+              {rivalOnlineHand.map((c, index) => (
+                <Card key={c.id} card={c} back style={fanStyle(index, rivalOnlineHand.length)} disabled />
+              ))}
+              {onlineAnimation?.actor === rivalOnlineSeat && onlineAnimation.card && (
+                <Card
+                  key={`remote-${onlineAnimation.cardId}`}
+                  card={onlineAnimation.card}
+                  motion={onlineAnimation.kind === 'place' ? 'cpu-placing-card' : 'cpu-playing-card'}
+                  style={fanStyle(rivalOnlineHand.length, rivalOnlineHand.length + 1)}
+                  disabled
+                />
+              )}
+            </div>
+          </div>
+
+          <div className="table-row">
+            <div className="deck-visual" aria-label="Mazo">
+              <div className="deck-stack">
+                <span className="deck-count">{onlineGameState.deck?.length || 0}</span>
+              </div>
+            </div>
+            <div className="table-zone">
+              <div className="toast-alert">{toast || onlineMessage}</div>
+              <div className="table-cards">
+                {onlineTableCardsForRender.length ? onlineTableCardsForRender.map((c) => {
+                  const motion = onlineAnimation?.stage === 'move' && onlineAnimation?.summedIds?.includes(c.id)
+                    ? 'summed-absorbed'
+                    : onlineAnimation?.stage === 'move' && onlineAnimation?.capturedIds?.includes(c.id)
+                      ? 'absorbed'
+                      : onlineAnimation?.stage === 'move' && onlineAnimation?.forfeitedIds?.includes(c.id)
+                        ? 'forfeited'
+                        : '';
+                  return (
+                    <Card
+                      key={c.id}
+                      card={c}
+                      motion={motion}
+                      selected={onlineSelectedTableIds.includes(c.id)}
+                      onClick={() => toggleOnlineTableCard(c)}
+                      disabled={!isMyOnlineTurn || onlineLoading}
+                    />
+                  );
+                }) : <p className="empty">Mesa vacia</p>}
+              </div>
+            </div>
+          </div>
+
+          <div className="play-row player-play-row">
+            <div className="player-stats compact-stats mobile-player-stats">
+              <div className="inline-score"><span>Puntos</span><strong>{myOnlineKey ? onlineGameState.score?.[myOnlineKey] : 0}</strong></div>
+              <div className="inline-score captured-box"><span>Capturadas</span><strong>{myOnlineCaptured.length}</strong></div>
+            </div>
+            <div className="row-header player-hand-header">
+              <div className="game-profile">
+                <div className="game-profile-photo">
+                  <span>{myOnlineSeat || '?'}</span>
+                </div>
+                <div>
+                  <h2>{onlinePlayerLabel(onlineGameState, myOnlineSeat)}</h2>
+                  <small>{isMyOnlineTurn ? 'Tu turno' : 'Espera tu turno'}</small>
+                </div>
+              </div>
+            </div>
+            <div className="hand">{myOnlineHand.map((c, index) => {
+              const isOnlineCardAnimating = onlineAnimation?.actor === myOnlineSeat && onlineAnimation?.cardId === c.id;
+              const motion = isOnlineCardAnimating
+                ? onlineAnimation.kind === 'place'
+                  ? 'placing-card'
+                  : 'playing-card'
+                : '';
+              return (
+                <Card
+                  key={c.id}
+                  card={c}
+                  motion={motion}
+                  style={fanStyle(index, myOnlineHand.length)}
+                  onClick={() => submitOnlineMove(c)}
+                  disabled={!isMyOnlineTurn || onlineLoading}
+                />
+              );
+            })}</div>
+          </div>
+        </section>
+
+        <section className="panel online-log-panel">
+          <h3>Historial online</h3>
+          {(onlineGameState.logs || []).slice(0, 8).map((line, index) => (
+            <p key={`${line}-${index}`}>{line}</p>
+          ))}
+          <div className="menu-actions">
+            <button className="menu-button" onClick={() => setScreen('online')}>Volver al lobby</button>
+            <button className="menu-button" onClick={() => setScreen('menu')}>Menu</button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (screen === 'auth') {
+    return (
+      <main className="app menu-screen">
+        <section className="menu-panel auth-panel">
+          <p className="eyebrow">Cuenta de jugador</p>
+          <h1>{authMode === 'login' ? 'Iniciar sesion' : 'Registrarte'}</h1>
+          {!isSupabaseConfigured && (
+            <div className="auth-local-card">
+              <p>Supabase aun no esta configurado en esta vista previa. El inicio de sesion real requiere las variables VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY.</p>
+            </div>
+          )}
+          <div className="auth-tabs">
+            <button className={authMode === 'login' ? 'active' : ''} type="button" onClick={() => { setAuthMode('login'); setAuthMessage(''); }}>Ingresar</button>
+            <button className={authMode === 'register' ? 'active' : ''} type="button" onClick={() => { setAuthMode('register'); setAuthMessage(''); }}>Crear cuenta</button>
+          </div>
+          <form className="profile-form auth-form" onSubmit={submitAuth}>
+            {authMode === 'register' && (
+              <>
+                <label>
+                  Usuario
+                  <input
+                    value={authDraft.username}
+                    onChange={(event) => setAuthDraft({ ...authDraft, username: event.target.value })}
+                    placeholder="usuario"
+                    minLength={3}
+                    required
+                  />
+                </label>
+                <label>
+                  Nombre
+                  <input
+                    value={authDraft.name}
+                    onChange={(event) => setAuthDraft({ ...authDraft, name: event.target.value })}
+                    placeholder="Tu nombre"
+                    required
+                  />
+                </label>
+                <label>
+                  Ciudad
+                  <input
+                    value={authDraft.city}
+                    onChange={(event) => setAuthDraft({ ...authDraft, city: event.target.value })}
+                    placeholder="Ej. Quito"
+                  />
+                </label>
+              </>
+            )}
+            <label>
+              Correo
+              <input
+                type="email"
+                value={authDraft.email}
+                onChange={(event) => setAuthDraft({ ...authDraft, email: event.target.value })}
+                placeholder="correo@ejemplo.com"
+                required
+              />
+            </label>
+            <label>
+              Contrasena
+              <input
+                type="password"
+                value={authDraft.password}
+                onChange={(event) => setAuthDraft({ ...authDraft, password: event.target.value })}
+                placeholder="Minimo 6 caracteres"
+                minLength={6}
+                required
+              />
+            </label>
+            {authMessage && <p className="auth-message">{authMessage}</p>}
+            <button className="new" type="submit" disabled={authLoading}>
+              {authLoading ? 'Procesando...' : authMode === 'login' ? 'Iniciar sesion' : 'Crear cuenta'}
+            </button>
+          </form>
+          <div className="menu-actions">
+            <button className="menu-button" onClick={() => setScreen('menu')}>Volver</button>
           </div>
         </section>
       </main>
@@ -1288,6 +2282,16 @@ export default function App() {
               </div>
             </div>
             <label>
+              Usuario
+              <input
+                value={profileDraft.username}
+                onChange={(event) => setProfileDraft({ ...profileDraft, username: event.target.value })}
+                placeholder="usuario"
+                minLength={3}
+                required={isSupabaseConfigured}
+              />
+            </label>
+            <label>
               Nombre
               <input
                 value={profileDraft.name}
@@ -1314,6 +2318,9 @@ export default function App() {
               />
             </label>
             <button className="new" type="submit">{hasProfile ? 'Actualizar perfil' : 'Registrarme'}</button>
+            {isSupabaseConfigured && supabaseUser && (
+              <button className="menu-button profile-sign-out-button" type="button" onClick={signOut}>Cerrar sesion</button>
+            )}
           </form>
 
           <div className="profile-history">
